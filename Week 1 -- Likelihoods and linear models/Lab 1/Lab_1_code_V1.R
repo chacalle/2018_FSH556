@@ -1,5 +1,6 @@
 
-setwd( "C:/Users/James.Thorson/Desktop/Project_git/2018_FSH556/Week 1 -- Likelihoods and linear models/Lab 1" )
+#setwd( "C:/Users/James.Thorson/Desktop/Project_git/2018_FSH556/Week 1 -- Likelihoods and linear models/Lab 1" )
+setwd("/Users/chacalle/Documents/classes/2018_FSH556/Week 1 -- Likelihoods and linear models/Lab 1/")
 library(TMB)
 
 ###########
@@ -93,12 +94,12 @@ if( run_animations==TRUE ){
 # Delta-model for canary rockfish
 ###########
 
-devtools::install_github("nwfsc-assess/geostatistical_delta-GLMM")
-devtools::install_github("kaskr/TMB_contrib_R/TMBhelper")
+# devtools::install_github("nwfsc-assess/geostatistical_delta-GLMM", )
+# devtools::install_github("kaskr/TMB_contrib_R/TMBhelper")
 library( SpatialDeltaGLMM )
 
 #
-data(WCGBTS_Canary_example)
+data(WCGBTS_Canary_exampl)
 CPUE = WCGBTS_Canary_example$HAUL_WT_KG
 X = cbind( "Intercept"=rep(1,length(CPUE)) )
 
@@ -106,6 +107,7 @@ X = cbind( "Intercept"=rep(1,length(CPUE)) )
 compile( "delta_model_v1.cpp" )
 
 # Step 2 -- build inputs and object
+dyn.unload()
 dyn.load( dynlib("delta_model_v1") )
 Params = list("b_j"=rep(0,ncol(X)), "theta_z"=c(0,0))
 Data = list( "y_i"=CPUE, "X_ij"=X )
