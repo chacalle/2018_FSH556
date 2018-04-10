@@ -1,0 +1,205 @@
+---
+title: "Week1_HW"
+author: "Charlton Callender"
+date: "4/3/2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Homework #1 – Generalized linear models in Template Model Builder
+
+Goal:  Practice and demonstrate ability to (1) estimate parameters for generalized linear models in Template Model Builder, (2) use a simulation experiment to demonstrate that correctly-specified models are statistically consistent, and (3) use cross-validation to evaluate model performance in using a real-world data set.
+
+Files to turn in:  
+1.	Please submit a written description of your results, involving at least 2 tables (described below) and some explanatory text for each.  The whole thing should be (I imagine) less than 3 pages.  
+2.	Please also submit a single R script, and a single TMB Template file provided code that can replicate the analysis.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+First we load in the dataset including survey catch rate data for Alaska Pollock in the eastern Bering Sea.
+```{r, results = "hide", message = FALSE}
+rm(list=ls())
+set.seed(1)
+setwd("/Users/chacalle/Documents/classes/2018_FSH556/Week 1 -- Likelihoods and linear models/Homework/")
+library(SpatialDeltaGLMM)
+library(TMB)
+library(data.table)
+data("EBS_pollock_data")
+```
+
+This loads data into the environment that includes the catch rate and other potential covariates
+```{r, results = "hide", message = FALSE}
+head(EBS_pollock_data)
+```
+
+There are two basic models defined in this TMB code. Both use a "delta model" where we use the axiom of conditional probability to define seperate models for $Pr(c_i > 0)$ and $Pr(c_i = C | c_i > 0)$ and both have a log link.  For the first model version we use a delta-lognormal distribution and the second model version we use a delta-gamma distribution. The third model version is identical to the first except I included the year as a covariate. 
+
+```{r}
+compile("hw1.cpp")
+dyn.load(dynlib("hw1"))
+
+fit_mod <- function(mv, CPUE_data, partitions_K = 10) {
+  
+  if (partitions_K == 0) {
+    partition_i <- rep(-1, nrow(EBS_pollock_data))
+  } else {
+    partition_i = sample(x = 1:partitions_K, size = nrow(EBS_pollock_data), replace = TRUE)
+  }
+  pred_nll_k = rep(NA, partitions_K)
+  
+  partitions_loop <- if (partitions_K == 0) 1 else 1:partitions_K
+  results <- lapply(partitions_loop, function(k) {
+    print(paste0("Model version: ", mv))
+    print(paste0("Partition: ", k))
+    
+    # prep data input object
+    
+    Year = EBS_pollock_data$year
+    X = cbind("Intercept" = rep(1, length(CPUE_data)), if (mv == 3) "Year" = Year)
+    Data = list("model_version" = mv, "y_i" = CPUE_data, "X_ij" = X, 
+                holdout_i = ifelse(partition_i == k, 1, 0))
+    
+    # prep parameter input object
+    Params = list("b_j" = rep(0, ncol(X)), "theta_z" = c(0, 0))
+    
+    # Build TMB object
+    Obj = MakeADFun(data = Data, parameters = Params, DLL = "hw1")
+    
+    # Optimize
+    #Opt = nlminb( start=Obj$par, objective=Obj$fn, gradient=Obj$gr )
+    Opt = TMBhelper::Optimize(obj = Obj, newtonsteps = 1, getsd = FALSE)
+    SD = sdreport(Obj) # standard errors
+    
+    # Check convergence
+    if(any(abs(Opt$diagnostics[,'final_gradient']) > 0.001) | SD$pdHess == FALSE) stop("Not converged")
+    
+    # Report stuff
+    Report = Obj$report()
+    
+    results <- data.table(model_version = mv,
+                          partition = ifelse(partitions_K == 0, 0, k), 
+                          data_log_likelihood = Opt$objective,
+                          num_params = Opt$number_of_coefficients["Fixed"],
+                          held_out_data_points = sum(Data$holdout_i),
+                          pred_nll_k = Report$pred_jnll)
+    results[, b_0 := Opt$par[names(Opt$par) == "b_j"][1]]
+    results[, theta_0 := Opt$par[names(Opt$par) == "theta_z"][1]]
+    results[, theta_1 := Opt$par[names(Opt$par) == "theta_z"][2]]
+    if (mv == 3) {
+      results[, b_1 := Opt$par[names(Opt$par) == "b_j"][2]]
+    }
+    results[, zero_prob := boot::inv.logit(theta_0)]
+    
+    return(results)
+  })
+  results <- rbindlist(results)
+  
+  if (partitions_K != 0) {
+    results[, log_predictive_score_per_datum := pred_nll_k / held_out_data_points]
+    results[, mean_log_predictive_score_per_datum := mean(log_predictive_score_per_datum)]
+  }
+  
+  return(results)
+}
+```
+
+Here I am fitting each of the model versions first with all the data included. 
+
+```{r, results = "hide", message = FALSE}
+results_1 <- fit_mod(mv = 1, CPUE_data = EBS_pollock_data$catch, partitions_K = 0)
+results_2 <- fit_mod(mv = 2, CPUE_data = EBS_pollock_data$catch, partitions_K = 0)
+results_3 <- fit_mod(mv = 3, CPUE_data = EBS_pollock_data$catch, partitions_K = 0)
+```
+
+And here I am fitting each of the model versions in a 10-fold cross validation experiment
+
+```{r, results = "hide", message = FALSE}
+results_1_CV <- fit_mod(mv = 1, CPUE_data = EBS_pollock_data$catch, partitions_K = 10)
+results_2_CV <- fit_mod(mv = 2, CPUE_data = EBS_pollock_data$catch, partitions_K = 10)
+results_3_CV <- fit_mod(mv = 3, CPUE_data = EBS_pollock_data$catch, partitions_K = 10)
+```
+
+Here we can see the parameter fits for each of the data.
+```{r}
+combined_results <- rbindlist(list(results_1, results_2, results_3), fill = T, use.names = T)
+combined_results_CV <- rbindlist(list(results_1_CV, results_2_CV, results_3_CV), fill = T, use.names = T)
+print(combined_results)
+```
+The table presented here shows the log predictive score per datum from the 10-fold cross validation, the model with the highest predictive probability is considered the "best" model
+
+```{r}
+table_1 <- merge(combined_results[, list(model_version, data_log_likelihood, num_params)], unique(combined_results_CV[, list(model_version, mean_log_predictive_score_per_datum)]))
+print(table_1)
+```
+
+Please conduct a simulation experiment that involves a 3 x 3 factorial design involving all nine combinations of three simulation models and three estimation models.  Use the same three estimation models as in Part 1, and define the three simulation models to perfectly match the estimation models (i.e, having the same linear predictors, probability distribution for the response variable, etc.).  Parameters for the simulation models should be fixed at the values estimated when using the EBS Pollock data set.  For each combination of simulation and estimation model, please conduct 100 simulation replicates.  Each replicate should involve generating 12,210 observations (i.e, the same number as in the pollock data set). 
+
+Please use this simulation experiment to show that the three cases where the simulation and estimation model are matching provide unbiased estimates of the intercept parameter.  Please also interpret which estimation model has relatively high or low error for each simulation model.
+
+
+```{r, results = "hide", message = FALSE}
+
+sim_lnorm <- function(zero_prob, meanlog, lognorm_sd, n = 1e5) {
+  (1 - rbinom(n, 1, zero_prob)) * rlnorm(n, meanlog, lognorm_sd)
+}
+
+sim_gamma <- function(shape, scale, n = 1e5) {
+  rgamma(n, shape = shape, scale = scale)
+}
+
+
+simulate <- function(sim_mv, fit_mv, replicates = 100, observations = 12210) {
+
+  Year = EBS_pollock_data$year
+  data = data.table("intercept" = rep(1, observations))
+  if (sim_mv == 3) data[, "Year" := Year]
+  
+  
+  data[, log_linpred_i := intercept * combined_results[model_version == sim_mv, b_0]]
+  if (sim_mv == 3) data[, log_linpred_i := log_linpred_i + Year * combined_results[model_version == sim_mv, b_1]]
+  data[, lognorm_sd := exp(combined_results[model_version == sim_mv, theta_1])]
+  
+  data[, linpred_i := exp(log_linpred_i)]
+  data[, CV := exp(combined_results[model_version == sim_mv, theta_1])]
+  data[, shape := CV ^ (-2)]
+  data[, scale := linpred_i * (CV ^ 2)]
+  
+  
+  sims <- lapply(1:replicates, function(i) {
+    if (sim_mv == 2) {
+      CPUE <- sim_gamma(data[, shape],
+                        data[, scale],
+                        n = observations)
+      
+    } else {
+      CPUE <- sim_lnorm(combined_results[model_version == sim_mv, zero_prob],
+                        data[, log_linpred_i],
+                        data[, lognorm_sd],
+                        n = observations)
+      
+    }
+    result <- fit_mod(mv = fit_mv, CPUE_data = CPUE, partitions_K = 0)
+    s <- data.table(sim_model_version = sim_mv, fit_model_version = fit_mv, sim = i, 
+                    b_0 = result[, b_0], 
+                    true_b0 = combined_results[model_version == sim_mv, b_0])
+  })
+  sims <- rbindlist(sims)
+  sims[, squared_error := (b_0 - true_b0) ^ 2]
+  rmse <- sqrt(mean(sims[, squared_error]))
+  return(rmse)
+}
+
+table_2 <- CJ(sim_version = 1:3, fit_version = 1:3)
+table_2[, n := 1:.N]
+table_2[, rmse := simulate(sim_mv = sim_version, fit_mv = fit_version, replicates = 20), by = n]
+table_2[, n := NULL]
+```
+```{r}
+print(table_2)
+```
+
+From this table we can see that when the simulation and model fitting version match the root mean squared error is pretty close to 0. In the case of the third model version, I believe there is something going awry in the implementation of this model version as the the b_0 value shown way above is much higher than model version 1 and 2. 
