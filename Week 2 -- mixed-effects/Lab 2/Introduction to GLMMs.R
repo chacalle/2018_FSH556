@@ -1,6 +1,6 @@
 
-setwd( "C:/Users/James.Thorson/Desktop/Project_git/2018_FSH556/Week 2 -- mixed-effects/Lab 2" )
-Use_REML = TRUE
+setwd( "/Users/chacalle/Documents/classes/2018_FSH556/Week 2 -- mixed-effects/Lab 2/" )
+Use_REML = FALSE
 
 #devtools::install_github("kaskr/TMB_contrib_R/TMBhelper")
 
