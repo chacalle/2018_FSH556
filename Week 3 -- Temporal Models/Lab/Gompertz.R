@@ -1,5 +1,5 @@
 
-setwd( "C:/Users/James.Thorson/Desktop/Project_git/2018_FSH556/Week 3 -- Temporal Models/Lab" )
+setwd("/Users/chacalle/Documents/classes/2018_FSH556/Week 3 -- Temporal Models/Lab/")
 Use_REML = FALSE
 set.seed(2)
 
@@ -101,10 +101,15 @@ for( z in 1:3 ){
 
 # Download data for Alaska pollock
 CPUE = FishData::download_catch_rates( survey="Eastern_Bering_Sea", species_set="Gadus chalcogrammus", error_tol=0.01, localdir=paste0(getwd(),"/") )
-B_t = tapply( CPUE[,'Wt'], INDEX=CPUE[,'Year'], FUN=mean )
+B_t_mu = tapply( CPUE[,'Wt'], INDEX=CPUE[,'Year'], FUN=mean )
+B_t_sd = tapply( CPUE[,'Wt'], INDEX=CPUE[,'Year'], FUN=sd )
+B_t_n = tapply( CPUE[,'Wt'], INDEX=CPUE[,'Year'], FUN=length )
+B_t_se = B_t_sd / sqrt(B_t_n)
+B_t_CV = B_t_se / B_t_mu
+sigma2_lognormal = log((B_t_CV ^ 2) + 1)
 
 # Run Gompertz model again
-Data = list( "nt"=length(B_t), "log_b_t"=log(B_t) )
+Data = list( "nt"=length(B_t_mu), "log_b_t"=log(B_t_mu), "sigma2_lognormal" = sigma2_lognormal)
 Parameters = list( "log_d0"=0, "log_sigmaP"=1, "log_sigmaM"=1, "alpha"=0, "rho"=0, "log_d_t"=rep(0,Data$nt) )
 Obj = MakeADFun(data=Data, parameters=Parameters, random=Random, DLL="gompertz")  #
 Opt = TMBhelper::Optimize( obj=Obj )
