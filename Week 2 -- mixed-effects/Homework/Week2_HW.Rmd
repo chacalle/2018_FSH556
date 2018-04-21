@@ -1,0 +1,190 @@
+---
+title: "Week1_HW"
+author: "Charlton Callender"
+date: "4/17/2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Homework #2 – Generalized linear mixed models in Template Model Builder
+
+For this homework we are practicing simulating and fitting generalized linear mixed models in TMB. For the simulation experiment we pretend that we've collected 10 counts of clams at 10 different sites. Each of these sites differ slightly from each other, "among-site variability". The variability in the 10 counts we take at each site is known as "overdispersion". 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, results = "hide", message = FALSE}
+library(TMB)
+library(data.table)
+library(ggplot2)
+
+rm(list = ls())
+set.seed(30)
+```
+
+The model is defined as:
+
+$$log(\lambda(s)) \sim Normal(\mu, \sigma_s^2)$$
+$$log(\bar{y_i}) \sim Normal(log(\lambda(s_i)), \sigma_y^2)$$
+$$y_i \sim Poisson(\bar{y_i})$$
+but can also be written as (this is the parameterization I use):
+
+$$log(\bar{y_i}) = \mu + \delta_i + \epsilon_{s_{(i)}}$$
+$$\epsilon_s \sim Normal(0, \sigma_s^2)$$
+$$\delta_i \sim Normal(0, \sigma_y^2)$$
+$$y_i \sim Poisson(\bar{y_i})$$
+
+For this homework we can define the truth and see how different estimation models perform. We define the log mean for expected counts $(\mu)$ to be 2. The variance of among-site variability is $\sigma_s^2 = 1$ and the variance of overdispersion is $\sigma_y^2 = 0.5$.
+
+```{r}
+# this function simulates from the model specified above.
+simulate_data <- function(n_sites = 10, n_counts_per_site = 10,
+                          mu = 2, sigma_s = sqrt(1), sigma_y = sqrt(0.5)) {
+
+  sims <- lapply(1:n_sites, function(s) {
+    e_s <- rnorm(n = 1, mean = 0, sd = sigma_s)
+    d_i <- rnorm(n = n_counts_per_site, mean = 0, sd = sigma_y)
+    mean_y_i <- mu + d_i + e_s
+    y_i <- rpois(n = n_counts_per_site, lambda = exp(mean_y_i))
+
+    site_sims <- data.table(site = s, count = 1:n_counts_per_site,
+                            epsilon_s = e_s, delta_i = d_i,
+                            mean_y_i = mean_y_i, y_i = y_i)
+    return(site_sims)
+  })
+  sims <- rbindlist(sims)
+  return(sims)
+}
+
+sims <- simulate_data()
+head(sims)
+```
+
+We can plot out the predictions for each separate site and can see the variability in the distributions between sites and the overdispersion present at each site. 
+
+```{r}
+plot <- ggplot(data = sims, aes(x = y_i, fill = as.factor(site))) +
+  geom_density(color = "black") +
+  facet_wrap(~ site) +
+  labs(title = "Site-specific simulations") +
+  theme_bw()
+print(plot)
+```
+
+In TMB we can code up the generalized linear mixed model that includes the among-site variability and overdispersion. We can optionally turn off these sources of variance in the model by using the map parameter and setting the initial value for the log standard deviation to 1e-10.
+
+```{r, results = "hide", message = FALSE}
+# Compile model
+compile("hw2.cpp")
+
+fit_mod <- function(sim, among_site_variability = T, overdispersion = T) {
+
+  n_sites <- max(sim$site)
+  n_counts_per_site <- max(sim$count)
+
+  # convert data to matrix for TMB code
+  sample <- dcast(sim, formula = site ~ count, value.var = "y_i")
+  sample[, site := NULL]
+  sample <- as.matrix(sample)
+
+  # Build inputs
+  Data = list(y_sc = sample)
+  Parameters = list(mu = 5,
+                    epsilon_s = rep(0, n_sites), log_sigma_s = 0,
+                    delta_c = matrix(0, nrow = n_sites, ncol = n_counts_per_site), log_sigma_y = 0)
+  Random = c("epsilon_s", "delta_c")
+
+  # Define what variables to fix
+  Map <- list()
+  if (!among_site_variability) {
+    Map[["epsilon_s"]] <- factor(rep(NA, n_sites))
+    Map[["log_sigma_s"]] <- factor(NA)
+    Parameters[["log_sigma_s"]] <- log(1e-10)
+  }
+
+  if (!overdispersion) {
+    Map[["delta_c"]] <- factor(rep(NA, n_sites * n_counts_per_site))
+    Map[["log_sigma_y"]] <- factor(NA)
+    Parameters[["log_sigma_y"]] <- log(1e-10)
+  }
+
+  # Build object
+  dyn.load(dynlib("hw2"))
+  Obj = MakeADFun(data = Data, parameters = Parameters, random = Random, map = Map)
+
+  # Optimize
+  Opt = TMBhelper::Optimize(obj = Obj)
+
+  # Get SEs and CIs
+  means = as.list( Opt$SD, "Estimate" )
+  std_error = as.list( Opt$SD, "Std. Error" )
+
+  fit_results <- data.table(mean = means[["mu"]], se = std_error[["mu"]])
+  fit_results[, lower := mean - (1.96 * se)]
+  fit_results[, upper := mean + (1.96 * se)]
+
+  return(fit_results)
+}
+
+result <- fit_mod(sims)
+```
+
+This function returns a data frame with the mean and lower and upper 95% confidence interval
+
+```{r}
+print(result)
+```
+
+# Simulation Experiment
+
+We can now generate 100 simulated datasets and see how each of the following four alternative estimation models perform. The 100 datasets are simulated using the full model, version 4.
+
+1.	a generalized linear model, without any among-site variability or overdispersion.  
+2.	a generalized linear mixed model (GLMM) with only among-site variability
+3.	a GLMM with only overdispersion
+4.	a GLMM with both among-site variability and overdispersion
+
+```{r}
+# create simulated data
+n_simulated_datasets <- 100
+full_simulated_data <- lapply(1:n_simulated_datasets, function(i) {
+  sim <- simulate_data()
+  sim[, sim := i]
+})
+full_simulated_data <- rbindlist(full_simulated_data)
+print(full_simulated_data)
+```
+
+Then estimate each of the four alternative models for each separate simulated dataset.
+
+```{r, results = "hide", message = FALSE}
+fit_results <- lapply(1:4, function(mod) {
+  message(paste0("Fitting model version: ", mod))
+  mod_results <- lapply(1:n_simulated_datasets, function(i) {
+    result <- fit_mod(full_simulated_data[sim == i],
+                      among_site_variability = mod %in% c(2, 4),
+                      overdispersion = mod %in% c(3, 4))
+    result[, model_version := mod]
+    result[, sim := i]
+    return(result)
+  })
+  mod_results <- rbindlist(mod_results)
+})
+fit_results <- rbindlist(fit_results)
+fit_results[, contains_truth := between(2, lower, upper)]
+```
+
+And finally we can make a summary table showing the average estimate of $\mu$ for each model specification version across all simulated datasets and the proportion of replicates where the true value of $\mu$ is within the confidence interval for each model
+
+```{r}
+print(fit_results)
+
+summary <- fit_results[, list(mu = mean(mean), coverage = sum(contains_truth) / .N), by = c("model_version")]
+print(summary)
+```
+
+The interpretation of a confidence interval $(CI_{x\%})$ is that the CI contains the true value $x\%$ of the time. This is only true though when the model is correctly specified. 
+We can see in this simulation experiment that the first three model versions that are incorrectly specified have much poorer CI coverage because they do not account for among-site variability and/or overdispersion. The correctly specified model (version 4) has a CI coverage much closer to 95%. The model version without either sources of variation (1) has the lower CI coverage. 
+Interestingly the model version with only among-site variability (2) has higher CI coverage than the model version with only overdispersion (3), I think this may be due to the fact that the true value of the among-site variation ($\sigma_s^2$) is greater than the true value of the variation due to overdispersion ($\sigma_y^2$). Therefore we can fit the simulated data better by accounting for the greater source of variation
