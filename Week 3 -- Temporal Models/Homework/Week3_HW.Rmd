@@ -1,0 +1,233 @@
+---
+title: "Week3_HW"
+author: "Charlton Callender"
+date: "4/23/2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Homework #3 – Forecast Interval Coverage
+
+For this homework we are implementing linear and non-linear state space models and exploring 
+the impact model mis-specification has on forecast interval coverage. 
+
+```{r, results = "hide", message = FALSE}
+library(TMB)
+library(data.table)
+library(ggplot2)
+
+rm(list=ls())
+set.seed(3)
+```
+
+First download data for Alaska pollack and calculate the average cpue by year.
+
+```{r, results = "hide", message = FALSE}
+# download data
+cpue_data = FishData::download_catch_rates(survey="Eastern_Bering_Sea", species_set="Gadus chalcogrammus", error_tol=0.01, localdir=paste0(getwd(),"/"))
+cpue_data <- data.table(cpue_data)
+cpue_data <- cpue_data[, list(year = Year, cpue = Wt)]
+
+# get rid of missing data points
+cpue_data[cpue < 0, cpue := NA]
+cpue_data <- cpue_data[!is.na(cpue)]
+
+# calculate average cpue by year
+cpue_data <- cpue_data[, list(cpue = mean(cpue)), by = "year"]
+```
+
+Then implement a state-space Gompertz model to estimate biomass $x_t$ given average cpue data $y_t$ for all years of data 1982 - 2017. The model is defined as:
+
+$$log(x_{t+1}) \sim Normal(\alpha + \rho log(x_t), \sigma_x^2)$$
+$$log(y_t) \sim Normal(log(x_t), \sigma_y^2)$$
+
+For this model we assume that $\sigma_x^2 = \sigma_y^2$
+
+
+```{r, results = "hide", message = FALSE}
+# Compile model
+compile("hw3.cpp")
+dyn.load(dynlib("hw3"))
+
+fit_model <- function(fit_data, holdout_years = c(), ricker = F, quantile = 0.95) {
+  
+  original_years <- unique(fit_data$year)
+  
+  fit_data <- fit_data[!year %in% holdout_years]
+  
+  # Build inputs
+  Data = list(log_y_t = log(fit_data$cpue), ricker = as.integer(ricker))
+  Parameters = list(log_x_0 = 0, log_sigma = 1, theta = c(1, 1), log_x_t = rep(0, length(original_years)))
+  Random = c("log_x_t")
+  
+  # Build object
+  Obj = MakeADFun(data=Data, parameters=Parameters, random=Random, DLL="hw3")
+  
+  # Optimize
+  Opt = TMBhelper::Optimize(obj=Obj)
+  
+  # compile together estimates
+  means = as.list( Opt$SD, "Estimate" )
+  std_error = as.list( Opt$SD, "Std. Error" )
+  
+  fixed_variables <- c("log_x_0", "log_sigma", if (!ricker) c("alpha", "rho") else c("log_r", "log_K"))
+  fixed_coefficients <- data.table(variable = fixed_variables, mean = unlist(means[c("log_x_0", "log_sigma", "theta")]), se = unlist(std_error[c("log_x_0", "log_sigma", "theta")]))
+  random_coefficients <- data.table(variable = paste0("log_x_", original_years), mean = means[["log_x_t"]], se = std_error[["log_x_t"]])
+  
+  coefficients <- rbind(fixed_coefficients, random_coefficients)
+  coefficients[, lower := mean - (qnorm((quantile + (1 - quantile) / 2)) * se)]
+  coefficients[, upper := mean + (qnorm((quantile + (1 - quantile) / 2)) * se)]
+  
+  # compile together parameters
+  parameters <- data.table(variable = c("log_x_0", "log_sigma", "theta1", "theta2"),
+                           value = Opt$par)
+  parameters[variable == "theta1", variable := "alpha"]
+  parameters[variable == "theta2", variable := "rho"]
+  
+  return(list(Opt = Opt,
+              coefficients = coefficients))
+}
+
+state_space_results <- fit_model(fit_data = cpue_data, ricker = F)
+ricker_results <- fit_model(fit_data = cpue_data, ricker = T)
+```
+
+The model seems to fit reasonably well, there are a couple of years around 1988-1990 where the model estimates a biomass below the data points. It is interesting to see all the biomass estimates pulled towards a mean trend. 
+
+```{r}
+plot_fit <- function(coefficients) {
+  plot_data <- coefficients[grepl("log_x_", variable), list(variable, cpue = mean, lower, upper)]
+  plot_data[, year := as.integer(substr(variable, 7, 10))]
+  plot_data <- plot_data[year != 0]
+  plot_data <- plot_data[, source := "estimated log_x_t"]
+  
+  actual_data <- cpue_data[, list(year, cpue = log(cpue), source = "data log_y_t")]
+  plot_data <- rbind(plot_data, actual_data, use.names = T, fill = T)
+  plot_data <- plot_data[, list(year, source, cpue, lower, upper)]
+  
+  p <- ggplot(plot_data, aes(x = year, y = cpue, colour = source)) +
+    geom_point() +
+    geom_errorbar(aes(ymin = lower, ymax = upper), alpha = 0.5, width = 0) +
+    labs(x = "Year", y = "log CPUE", title = "CPUE data and Gompertz model fit") +
+    theme_bw()
+  print(p)
+  
+}
+plot_fit(state_space_results$coefficients)
+```
+
+For the next part we conduct a parametric bootstrap where we use the estimated parameter values above to simulate 100 replicates of a new biomass and CPUE time series for all years 1982 - 2017. We then refit the Gompertz and Ricker model for the years 1982-2012 while still estimating biomass for the full time series. We can then compare the forecasted biomass in 2013-2017 to the simulated data. 
+
+```{r, results = "hide", message = FALSE}
+# use parameter values to simulate a new biomass time series
+simulate_data <- function(parameters, years = 1982:2017) {
+  log_x_t <- rep(NA, length(years))
+  log_x_t[1] <- parameters[variable == "log_x_0", mean]
+  for (y in 2:length(years)) {
+    mean <- parameters[variable == "alpha", mean] + (parameters[variable == "rho", mean] * log_x_t[y - 1])
+    log_x_t[y] <- rnorm(n = 1, mean = mean, sd = exp(parameters[variable == "log_sigma", mean]))
+  }
+
+  y_t <- rep(NA, length(years))
+  for(y in 1:length(years)) {
+    y_t[y] <- exp(rnorm(n = 1, mean = log_x_t[y], sd = exp(parameters[variable == "log_sigma", mean])))
+  }
+
+  sim_data <- data.table(year = years, cpue = y_t, log_x_t = log_x_t)
+  return(sim_data)
+}
+
+# conduct parametric bootstrap
+simulation_experiment <- function(parameters, replicates = 100, ricker = F) {
+  results <- lapply(1:replicates, function(i) {
+    
+    # get simulated data
+    sims <- simulate_data(parameters)
+
+    # fit model and calculate 50% CI intervals
+    result <- fit_model(fit_data = sims, holdout_years = 2013:2017, ricker = ricker, quantile = 0.5)
+
+    # compile together coefficients and determine if estimate is in 50% interval
+    fixed_vars <- c("log_x_0", "log_sigma", "alpha", "rho", "log_r", "log_K")
+    fixed_parameters <- state_space_results$coefficients[variable %in% fixed_vars, list(variable, fixed = mean)]
+
+    # merge on simulated data and fixed parameters
+    sims <- sims[, list(variable = paste0("log_x_", year), data = log_x_t)]
+    coef <- merge(result$coefficients, sims, by = "variable", all.x = T)
+    coef <- merge(coef, fixed_parameters, by = "variable", all.x = T)
+    coef[variable %in% fixed_vars, data := fixed]
+    coef[, fixed := NULL]
+    coef[, contains_truth := between(data, lower, upper)]
+    coef[, replicate := i]
+
+    return(coef)
+
+  })
+  results <- rbindlist(results)
+  return(results)
+}
+
+sim_results <- simulation_experiment(state_space_results$coefficients)
+sim_results_ricker <- simulation_experiment(state_space_results$coefficients, ricker = T)
+```
+
+All the fixed effect values have about 50% interval coverage across the replicates. It's interesting that some of the estimated rho values are below 0, a future direction may be modeling rho in logit space. The forecasted biomass values have much larger forecast intervals but the coverage does not increase
+
+```{r}
+plot_variables <- c("log_x_0", "log_sigma", "alpha", "rho")
+ggplot(sim_results[variable %in% plot_variables], aes(x = replicate, y = mean, colour = contains_truth)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0) +
+  geom_hline(aes(yintercept = data)) +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = "replicate", y = "value", title = "Gompertz fixed effect coefficients") +
+  theme_bw()
+plot_variables <- c(paste0("log_x_", 2010:2017))
+ggplot(sim_results[variable %in% plot_variables], aes(x = replicate, y = mean, colour = contains_truth)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0) +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = "replicate", y = "value", title = "Gompertz random effect coefficients") +
+  theme_bw()
+```
+
+```{r}
+plot_variables <- c("log_x_0", "log_sigma", "log_r", "log_K")
+ggplot(sim_results_ricker[variable %in% plot_variables], aes(x = replicate, y = mean, colour = contains_truth)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0) +
+  geom_hline(aes(yintercept = data)) +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = "replicate", y = "value", title = "Ricker fixed effect coefficients") +
+  theme_bw()
+plot_variables <- c(paste0("log_x_", 2010:2017))
+ggplot(sim_results_ricker[variable %in% plot_variables], aes(x = replicate, y = mean, colour = contains_truth)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0) +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = "replicate", y = "value", title = "Ricker random effect coefficients") +
+  theme_bw()
+```
+
+There is not a noticeable difference in forecasted interval coverage for short forecasts between the Gompertz and Ricker model. Interestingly, both models have increased coverage for longer forecasts but the Gompertz model has a bit larger coverage. It kind of makes sense that the shorter term forecast interval coverage would be smaller given that it is closer to the most recent data available. It was suprising to me though that the Ricker model did not have even worse forecast interval coverage given the model misspecification which makes me wonder if I coded it up correctly. 
+
+```{r}
+coverage <- sim_results[, list(coverage = sum(contains_truth) / .N), by = c("variable")]
+coverage[, year := as.integer(substr(variable, 7, 10))]
+coverage[, model := "Gompertz"]
+
+coverage_ricker <- sim_results_ricker[, list(coverage = sum(contains_truth) / .N), by = c("variable")]
+coverage_ricker[, year := as.integer(substr(variable, 7, 10))]
+coverage_ricker[, model := "Ricker"]
+
+coverage <- rbind(coverage, coverage_ricker)
+
+ggplot(coverage[variable %in% paste0("log_x_", 1982:2017)], 
+       aes(x = year, y = coverage, colour = model, fill = model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_vline(aes(xintercept = 2013)) +
+  geom_hline(aes(yintercept = 0.5))
+  
+print(coverage)
+```
