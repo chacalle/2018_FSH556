@@ -36,8 +36,8 @@ Type objective_function<Type>::operator() ()
   jnll_comp.setZero();
 
   // Derived quantities
-  Type Range = sqrt(8) / exp( ln_kappa );
-  Type SigmaE = 1 / sqrt(4 * M_PI * exp(2*ln_tau) * exp(2*ln_kappa));
+  Type Range = sqrt(8) / exp( ln_kappa ); // distance at which correlation drops to 10%, linear function of kappa
+  Type SigmaE = 1 / sqrt(4 * M_PI * exp(2*ln_tau) * exp(2*ln_kappa)); // variance parameter
 
   // Probability of random effects
   Eigen::SparseMatrix<Type> Q = exp(4*ln_kappa)*M0 + Type(2.0)*exp(2*ln_kappa)*M1 + M2;
