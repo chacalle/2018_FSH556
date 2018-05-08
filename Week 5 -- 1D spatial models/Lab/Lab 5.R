@@ -1,7 +1,7 @@
 
 
 library(TMB)
-setwd( "C:/Users/James.Thorson/Desktop/Project_git/2018_FSH556/Week 5 -- 1D spatial models/Lab/" )
+setwd( "/Users/chacalle/Documents/classes/2018_FSH556/Week 5 -- 1D spatial models/Lab/" )
 
 ###################
 # Visualize autocorrelation

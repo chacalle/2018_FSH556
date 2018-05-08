@@ -54,6 +54,8 @@ Type objective_function<Type>::operator() ()
   }
   if( Options_vec(0)==3 ){
     // NOT IMPLEMENTED //
+    jnll_comp(1) += SCALE( AR1(rho), pow(sigma2 / (1-pow(rho,2)),0.5))( epsilon_s );
+
   }
 
   // Probability of data conditional on random effects
