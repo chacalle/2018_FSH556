@@ -75,7 +75,7 @@ Type objective_function<Type>::operator() ()
   //// Going downstream in the random effect vector
   if( Options_vec(0)==0 ){
     vector<Type> Tmp_y(n_y);
-    matrix<Type> Q0_yy(n_y,n_y);
+    matrix<Type> Q0_yy(n_y,n_y); // the first row
     Q0_yy = Q_yy * ( 1-pow(rho,2) ) / sigma2;
     matrix<Type> Q1_yy(n_y,n_y);
     Q1_yy = Q_yy / sigma2;

@@ -1,5 +1,5 @@
 
-setwd( "C:/Users/James.Thorson/Desktop/Project_git/2018_FSH556/Week 6 -- 2D spatial models/Lecture/" )
+setwd( "/Users/chacalle/Documents/classes/2018_FSH556/Week 6 -- 2D spatial models/Lecture/" )
 
 library(TMB)
 library(RandomFields)
