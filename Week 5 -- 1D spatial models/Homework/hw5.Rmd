@@ -1,0 +1,101 @@
+---
+title: "HW5"
+author: "Charlton Callender"
+date: "5/7/2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+For this homework we will be estimating and simulating nonlinear mixed-effects models
+that have a 1D spatial process. We will be estimating two version of the same model with and without covariates to show that uncertainty decreases when including covariates.
+
+```{r, results = "hide", message = FALSE, warning = F}
+library(TMB)
+library(data.table)
+library(ggplot2)
+
+rm(list=ls())
+set.seed(5)
+setwd("/Users/chacalle/Documents/classes/2018_FSH556/Week 5 -- 1D spatial models/Homework/")
+source("Homework_Week_5_simulator.R")
+
+compile("hw5.cpp")
+dyn.load(dynlib("hw5"))
+```
+
+Many species show latitudinal clines in individual growth rates. This model like last week seems to be sensitive to starting values and often gives warnings about non-convergance but seems to predict the underlying asympotic size fairly well. 
+
+```{r, results = "hide", message = FALSE, warning = F}
+run_simulation_experiment <- function(include_spatial_trend = T) {
+
+  # generate simulated data
+  sim_data <- data.table(Sim_Fn())
+  setnames(sim_data, c("s_i", "a_i", "l_i", "true_linf_i")) # to be consistent with hw description
+  sim_data <- sim_data[order(s_i)] # order data by latitude
+
+  # Build inputs
+  Data = list(s_i = sim_data$s_i, a_i = sim_data$a_i, l_i = sim_data$l_i)
+  Parameters = list(log_l_0 = log(1), log_k = log(0.1), log_sigma2_measure = 1,
+                    log_rho = log(0.1), log_sigma2_spatial = 1,
+                    log_beta_0 = log(20), beta_s = 0,
+                    epsilon_i = rep(0, nrow(sim_data)))
+  Random = c("epsilon_i")
+
+  # optionally include spatial trend
+  Map <- list()
+  if (!include_spatial_trend) {
+    Map[["beta_s"]] <- factor(NA)
+  }
+
+  # Build object
+  Obj = MakeADFun(data = Data, parameters = Parameters, random = Random, map = Map, DLL="hw5")
+
+  # Obj$fn( Obj$par)
+  # Obj$gr( Obj$par )
+  # Obj$fn( Obj$env$last.par)
+  # Obj$gr( Obj$par )
+
+  # Optimize
+  Opt = TMBhelper::Optimize(obj=Obj)
+
+  # calculate rmse for asymptotic maximum size
+  Report = Obj$report()
+  sim_data[, pred_linf_i := Report$l_inf_i]
+  Report$l_inf_i <- NULL
+  Report$rmse <- sim_data[, sqrt(mean((true_linf_i - pred_linf_i) ^ 2))]
+  setDT(Report)
+
+  Report[, include_spatial_trend := include_spatial_trend]
+
+  return(Report)
+}
+```
+
+For the simulation experiment, we run the model with and without a spatial covariate 100 times. 
+
+```{r, results = "hide", message = FALSE, warning = F}
+simulation_results <- lapply(1:100, function(i) {
+  results <- lapply(c(F,T), function(v) {
+    run_simulation_experiment(v)
+  })
+  results <- rbindlist(results)
+  results[, experiment := i]
+})
+simulation_results <- rbindlist(simulation_results)
+simulation_results <- melt(simulation_results, id.vars = c("include_spatial_trend", "experiment"))
+mean_results <- simulation_results[, list(mean = mean(value)), by = c("include_spatial_trend", "variable")]
+```
+
+
+```{r}
+print(mean_results)
+p <- ggplot(simulation_results, aes(x = value, fill = include_spatial_trend)) +
+  geom_density(alpha = 0.5) +
+  geom_vline(data = mean_results, aes(xintercept = mean, colour = include_spatial_trend)) +
+  facet_wrap( ~ variable, scales = "free") +
+  theme_bw()
+print(p)
+```
+
+The density plots above show the distributions of all the fixed effects and the root mean squared error when comparing the random effects. These plots show that there isn't much change in rmse between the two models, the model with the spatial trend covariate might have slightly lower rmse. What really stands out is that the spatial variance term differs significantly betwenn the two models. When including the spatial covariate, the variance is much smaller as is the correlation term. 
