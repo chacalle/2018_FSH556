@@ -1,6 +1,6 @@
 
 
-setwd( "C:/Users/James.Thorson/Desktop/Project_git/2018_FSH556/Week 7 -- spatiotemporal models/Lab" )
+setwd( "/Users/chacalle/Documents/classes/2018_FSH556/Week 7 -- spatiotemporal models/Lab" )
 
 #########################
 # Spatial Gompertz model
@@ -37,12 +37,14 @@ if( n_knots < nrow(loc_xy) ){
   DF[,'Site'] = knots_xy$cluster[DF[,'Site']]
 }
 
-plot( loc_xy_orig, cex=2, pch=20 )
-points( loc_xy, cex=2, pch=3, col="red")
-
 # Build SPDE object using INLA (must pass mesh$idx$loc when supplying Boundary)
 mesh = inla.mesh.create( loc_xy )
 spde = inla.spde2.matern( mesh )
+
+# Visualize mesh and predictive process
+plot(mesh)
+plot( loc_xy_orig, cex=1.5, pch=20 )
+points( loc_xy, cex=2, pch=3, col="green", lwd=5)
 
 # Generate grid to visualize density
 vizloc_xy = expand.grid( x=seq(0,1,by=0.001), y=seq(0,1,by=0.001) )
@@ -90,7 +92,7 @@ Report0 = Obj$report()
 H0 = Obj$env$spHess()
 
 ##################
-#  Version 3 -- Joint analysis using TMB functions
+#  Version 3 -- Joint analysis using TMB functions "Innovations parameterization"
 ##################
 
 Version = "spatial_gompertz"
